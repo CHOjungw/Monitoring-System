@@ -1,0 +1,24 @@
+﻿<datas>
+  <data>
+    <heaterdata>
+      <date>0</date>
+      <time>0</time>
+      <value>0</value>
+    </heaterdata>
+  </data>
+  <data>
+    <waterdata>
+      <date>0</date>
+      <time>0</time>
+      <value>0</value>
+    </waterdata>
+  </data>
+  <data>
+    <airdata>
+      <date>0</date>
+      <time>0</time>
+      <value>0</value>
+      <value2>0</value2>
+    </airdata>
+  </data>
+</datas>
