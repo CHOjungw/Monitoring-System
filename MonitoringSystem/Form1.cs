@@ -1,8 +1,10 @@
 ﻿using MonitoringSystem.Properties;
+using MQTTnet;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Linq.Expressions;
@@ -10,20 +12,24 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Xml;
+using static OfficeOpenXml.ExcelErrorValue;
 
 
 namespace MonitoringSystem
 {
     public partial class Form1 : Form
     {
-        
+        public string _deviceName;
+        private Mqtt _mqttClient;
         Timer timer = new Timer();
         Random random = new Random();
         private DataManager dataManager = new DataManager();
+        private SetValue setValue;
+        private TempController tempController;
 
-        private HeaterData heaterData; /*= new HeaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), 0);*/
-        private WaterData waterData;  /*new WaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"),0);*/
-        private AirData airData;/* new AirData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), 0,0);*/
+        private HeaterData heaterData; 
+        private WaterData waterData;  
+        private AirData airData;
 
         int lampFlag = 0;
         private Form2 form2;
@@ -34,45 +40,132 @@ namespace MonitoringSystem
         bool compdrain = true;
         int WaterLeakCount = 0;
 
-
-        public Form1()
+        PIDController pIDController;
+        public struct equipData
         {
-            form2 = new Form2();
-            InitializeComponent();            
+            public int av1;
+            public int av2;
+            public int hv;
+            public int wv;
+        }
+        public equipData _equipData;
 
+
+        public Form1(string deviceName)
+        {
+            _equipData = new equipData();
+            _deviceName= deviceName;
+            setValue = new SetValue();
+            form2 = new Form2();
+            InitializeComponent();
+
+            _mqttClient = new Mqtt(_deviceName);
             timer.Interval = 1000;
-            timer.Tick += Timer_Tick;
-            timer.Start();
+            timer.Tick += Timer_Tick;            
             airData = new AirData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), 0, 0);
             waterData = new WaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), 0);
             heaterData = new HeaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), 0);
+            
+            _mqttClient.ConnectionStatusChanged += Mqttmanager_ConnectionStatusChanged;
+            _mqttClient.MessageReceived += Mqttmanager_MessegeReceive;
 
+            tempController = new TempController(this, 0.005, 0.0005, 0.01);
         }
+        
         public void simulation()
         {
-            av1 = random.Next(750, 770);
-            av2 = random.Next(750, 770);            
-            if(hv<=700)
+            if(setValue.AIRV1 == 0)
             {
-                hv += 30;
+                _equipData.av1 = random.Next(750, 770);
             }
-            else
+            else if(setValue.AIRV1 != null) 
             {
-                hv += random.Next(-10, 10);
+                _equipData.av1 = (int)setValue.AIRV1;
+                if(_equipData.av1 < setValue.AIRV1) 
+                {
+                    _equipData.av1 += random.Next(0, 2);
+                }
+                else if (_equipData.av1 > setValue.AIRV1) 
+                {
+                    _equipData.av1 -= random.Next(0,2);
+                }
+                else
+                {
+                    _equipData.av1 += random.Next(-2, 2);
+                }
             }
-            if(wv <=80&& compdrain ==true)
+            if (setValue.AIRV2 == 0)
             {
-                wv += 10;
-                drain(false);
+                _equipData.av2 = random.Next(750, 770);
             }
-            else
+            else if (setValue.AIRV2 != null)
             {
-                compdrain = false;
-                drain(true);   
+                _equipData.av2 = (int)setValue.AIRV2;
+                if (_equipData.av2 < setValue.AIRV2)
+                {
+                    _equipData.av2 += random.Next(0, 2);
+                }
+                else if (_equipData.av2 > setValue.AIRV1)
+                {
+                    _equipData.av2 -= random.Next(0, 2);
+                }
+            }
 
+            if (setValue.HVValue == 0)
+            {
+                if (_equipData.hv <= 700)
+                {
+                    _equipData.hv += tempController.TimerElapsed(setValue.HVValue);
+                }
+                else
+                {
+                    _equipData.hv += tempController.TimerElapsed(setValue.HVValue);
+                }
             }
-            waterLeak(wv);
-            ShowValue(av1, av2, wv, hv);
+            else if(setValue.HVValue != 0)
+            {
+                if(_equipData.hv <= setValue.HVValue)
+                {
+                    _equipData.hv += tempController.TimerElapsed(setValue.HVValue); ;
+                }
+                else if (_equipData.hv >= setValue.HVValue)
+                {
+                    _equipData.hv += tempController.TimerElapsed(setValue.HVValue);
+                }
+            }
+
+            if (setValue.WVValue == 0)
+            {
+                if (_equipData.wv <= 80 && compdrain == true)
+                {
+                    _equipData.wv += 10;
+                    drain(false);
+                }
+                else
+                {
+                    compdrain = false;
+                    drain(true);
+
+                }
+            }
+            else if (setValue.WVValue != null)
+            {
+                if (_equipData.wv <= setValue.WVValue)
+                {
+                    _equipData.wv += 10;
+                    drain(false);
+                }
+                else if (_equipData.wv >= setValue.WVValue)
+                {
+                    if (_equipData.wv > setValue.WVValue)
+                    {
+                        compdrain = false;
+                        drain(true);
+                    }
+                }
+            }
+            waterLeak(_equipData.wv);
+            ShowValue(_equipData.av1, _equipData.av2, _equipData.wv, _equipData.hv);
             
         }
         private void drain(bool value)
@@ -81,8 +174,8 @@ namespace MonitoringSystem
             checkedListBox1.SetItemChecked(0, value);
             if (value) 
             {
-                wv -= 10;
-                if (wv <= 30) compdrain = true;
+                _equipData.wv -= 10;
+                if (_equipData.wv <= 30) compdrain = true;
             }
         }
         private void waterLeak(int wv)
@@ -90,7 +183,7 @@ namespace MonitoringSystem
             
             if (DataManager.WDatas.Count >= 1)
             {
-                int lastvalue = DataManager.WDatas[DataManager.WDatas.Count - 1].value;
+                double lastvalue = DataManager.WDatas[DataManager.WDatas.Count - 1].value;
 
                 if (compdrain == true && lastvalue > wv)
                 {
@@ -101,11 +194,17 @@ namespace MonitoringSystem
                 else checkedListBox1.SetItemChecked(1, false);
             }
         }
+        public string ToFormatString()
+        {
+            return $"{_equipData.av1},{_equipData.av2},{_equipData.hv},{_equipData.wv}";
+        }
 
         private void Timer_Tick(object sender, EventArgs e)
         {                          
-            simulation();          
-            
+            simulation();
+            _mqttClient.PublishMessage("status",ToFormatString());
+
+
             Lamp_Contol();
             Error_Log();
             
@@ -113,9 +212,9 @@ namespace MonitoringSystem
         }
         public void ShowValue(int av1,int av2,int wv,int hv)
         {
-            airData = new AirData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), av1, av2);
-            waterData = new WaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), wv);
-            heaterData = new HeaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), hv);
+            airData = new AirData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), _equipData.av1, _equipData.av2);
+            waterData = new WaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), _equipData.wv);
+            heaterData = new HeaterData(DateTime.Now.ToShortDateString(), DateTime.Now.ToString("HH:mm:ss"), _equipData.hv);
             Console.WriteLine(waterData.date);
             Console.ReadLine();
             DataManager.HDatas.Add(heaterData);
@@ -125,7 +224,7 @@ namespace MonitoringSystem
             //debug
             Console.WriteLine(DataManager.HDatas.Count);
             if(form2 != null && form2.Visible)
-            form2.ChartAddPoint(av1, av2, wv, hv);
+            form2.ChartAddPoint(_equipData.av1, _equipData.av2, _equipData.wv, _equipData.hv);
 
             tbair1.Text = airData.value.ToString();
             tbair2.Text=airData.value2.ToString();
@@ -253,12 +352,14 @@ namespace MonitoringSystem
                 ErrorLog = heatLowTemp + errorString;
                 lbLog.Items.Insert(0,ErrorLog);
                 lampFlag = 1;
+                SendError(ErrorLog);
             }
             else if(heaterData.value>=850)
             {
                 ErrorLog = heatHighTemp + errorString;
                 lbLog.Items.Insert(0,ErrorLog);
                 lampFlag = 2;
+                SendError(ErrorLog);
             }            
             
             if(waterData.value >= 100)
@@ -266,12 +367,14 @@ namespace MonitoringSystem
                 ErrorLog = waterOverFlow + errorString;
                 lbLog.Items.Insert(0, ErrorLog);
                 lampFlag = 2;
+                SendError(ErrorLog);
             }
             else if (waterData.value <= 10)
             {
                 ErrorLog = waterLowFlow + errorString;
                 lbLog.Items.Insert(0, ErrorLog);
                 lampFlag = 1;
+                SendError(ErrorLog);
             }
 
         }        
@@ -292,6 +395,69 @@ namespace MonitoringSystem
         {
             lbLog.Items.Clear();
             lampFlag = 0;
+        }
+        public void Mqttmanager_ConnectionStatusChanged(object sender, string status)
+        {
+            Invoke((Action)(() =>
+            {
+                textBox1.Text = status;
+            }));
+        }
+        public void Mqttmanager_MessegeReceive(object sender, MqttApplicationMessageReceivedEventArgs e)
+        {
+
+            var payload = Encoding.UTF8.GetString(e.ApplicationMessage.Payload);
+            var parts = payload.Split('/');
+
+            switch (parts[0])
+            {
+                case "Heater Temp":
+                    setValue.HVValue = double.Parse(parts[1]);
+                    break;
+                case "Water Level":
+                    setValue.WVValue = double.Parse(parts[1]);
+                    break;
+                case "Air Pressure1":
+                    setValue.AIRV1 = double.Parse(parts[1]);
+                    break;
+                case "Air Pressure2":
+                    setValue.AIRV2 = double.Parse(parts[1]);
+                    break;
+                case "Turn Off":
+                    Invoke((Action)(() =>
+                    {
+                        timer.Stop();
+                        Console.WriteLine("Timer stopped.");
+                    }));
+                    break;
+                case "Turn On":
+                    Invoke((Action)(() =>
+                    {
+                        timer.Dispose();
+                        timer = new Timer();
+                        timer.Interval = 1000;
+                        timer.Tick += Timer_Tick;
+                        timer.Start();
+                        Console.WriteLine("Timer started.");
+                    }));
+                    break;
+            }          
+        }
+        private async void Form1_Load(object sender, EventArgs e)
+        {
+            try
+            {
+                await _mqttClient.StartAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Faild to start Mqtt client : {ex.Message}");
+            }
+            timer.Start();
+        }
+        private void SendError(string message)
+        {
+            _mqttClient.PublishMessage("error",message);
         }
     }
 }
